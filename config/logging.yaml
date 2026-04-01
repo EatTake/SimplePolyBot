@@ -1,0 +1,229 @@
+# SimplePolyBot 日志配置文件
+# 使用 structlog 进行结构化日志记录
+
+# ==================== 日志版本 ====================
+version: 1
+
+# ==================== 禁用现有日志器 ====================
+disable_existing_loggers: false
+
+# ==================== 日志格式器 ====================
+formatters:
+  # 标准格式器（用于文件日志）
+  standard:
+    format: "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+  
+  # 详细格式器（用于调试）
+  detailed:
+    format: "[%(asctime)s] [%(levelname)s] [%(name)s] [%(filename)s:%(lineno)d] [%(process)d:%(thread)d] %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+  
+  # 简洁格式器（用于控制台）
+  simple:
+    format: "[%(levelname)s] %(message)s"
+  
+  # JSON 格式器（用于生产环境）
+  json:
+    format: "{\"timestamp\": \"%(asctime)s\", \"level\": \"%(levelname)s\", \"logger\": \"%(name)s\", \"message\": \"%(message)s\", \"module\": \"%(module)s\", \"function\": \"%(funcName)s\", \"line\": %(lineno)d}"
+    datefmt: "%Y-%m-%dT%H:%M:%S"
+
+# ==================== 日志处理器 ====================
+handlers:
+  # 控制台处理器
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: simple
+    stream: ext://sys.stdout
+  
+  # 控制台调试处理器
+  console_debug:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: detailed
+    stream: ext://sys.stdout
+  
+  # 文件处理器（所有日志）
+  file_all:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: standard
+    filename: ./logs/simplepolybot.log
+    maxBytes: 10485760  # 10MB
+    backupCount: 5
+    encoding: utf-8
+  
+  # 文件处理器（错误日志）
+  file_error:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: detailed
+    filename: ./logs/error.log
+    maxBytes: 10485760  # 10MB
+    backupCount: 5
+    encoding: utf-8
+  
+  # 文件处理器（交易日志）
+  file_trading:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: json
+    filename: ./logs/trading.log
+    maxBytes: 10485760  # 10MB
+    backupCount: 10
+    encoding: utf-8
+  
+  # 文件处理器（订单日志）
+  file_orders:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: json
+    filename: ./logs/orders.log
+    maxBytes: 10485760  # 10MB
+    backupCount: 20
+    encoding: utf-8
+  
+  # 文件处理器（审计日志）
+  file_audit:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: json
+    filename: ./logs/audit.log
+    maxBytes: 52428800  # 50MB
+    backupCount: 10
+    encoding: utf-8
+
+# ==================== 日志器配置 ====================
+loggers:
+  # 根日志器
+  root:
+    level: INFO
+    handlers: [console, file_all, file_error]
+    propagate: false
+  
+  # 市场数据收集器日志器
+  market_data_collector:
+    level: INFO
+    handlers: [file_all]
+    propagate: true
+    qualname: modules.market_data_collector
+  
+  # 策略引擎日志器
+  strategy_engine:
+    level: INFO
+    handlers: [file_all, file_trading]
+    propagate: true
+    qualname: modules.strategy_engine
+  
+  # 订单执行器日志器
+  order_executor:
+    level: INFO
+    handlers: [file_all, file_orders]
+    propagate: true
+    qualname: modules.order_executor
+  
+  # 结算工作器日志器
+  settlement_worker:
+    level: INFO
+    handlers: [file_all, file_trading]
+    propagate: true
+    qualname: modules.settlement_worker
+  
+  # WebSocket 连接日志器
+  websocket:
+    level: INFO
+    handlers: [file_all]
+    propagate: true
+    qualname: shared.websocket
+  
+  # Redis 连接日志器
+  redis:
+    level: WARNING
+    handlers: [file_all]
+    propagate: true
+    qualname: shared.redis_client
+  
+  # API 客户端日志器
+  api_client:
+    level: INFO
+    handlers: [file_all, file_audit]
+    propagate: true
+    qualname: shared.api_client
+  
+  # 配置管理日志器
+  config:
+    level: INFO
+    handlers: [file_all]
+    propagate: true
+    qualname: shared.config
+  
+  # 第三方库日志器（降低日志级别）
+  web3:
+    level: WARNING
+    handlers: [file_all]
+    propagate: false
+    qualname: web3
+  
+  urllib3:
+    level: WARNING
+    handlers: [file_all]
+    propagate: false
+    qualname: urllib3
+  
+  asyncio:
+    level: WARNING
+    handlers: [file_all]
+    propagate: false
+    qualname: asyncio
+
+# ==================== structlog 配置 ====================
+structlog:
+  # 处理器链
+  processors:
+    - structlog.stdlib.filter_by_level
+    - structlog.stdlib.add_logger_name
+    - structlog.stdlib.add_log_level
+    - structlog.stdlib.PositionalArgumentsFormatter
+    - structlog.processors.TimeStamper:
+        fmt: "%Y-%m-%d %H:%M:%S"
+    - structlog.processors.StackInfoRenderer
+    - structlog.processors.format_exc_info
+    - structlog.processors.UnicodeDecoder
+  
+  # 上下文类
+  context_class: structlog.threadlocal.wrap_dict(dict)
+  
+  # 日志器工厂
+  logger_factory: structlog.stdlib.LoggerFactory()
+  
+  # 包装类
+  wrapper_class: structlog.stdlib.BoundLogger
+  
+  # 缓存日志器
+  cache_logger_on_first_use: true
+
+# ==================== 环境特定配置 ====================
+environments:
+  # 开发环境
+  development:
+    root:
+      level: DEBUG
+      handlers: [console_debug, file_all]
+  
+  # 测试环境
+  staging:
+    root:
+      level: INFO
+      handlers: [console, file_all, file_error]
+  
+  # 生产环境
+  production:
+    root:
+      level: WARNING
+      handlers: [file_all, file_error, file_audit]
+    loggers:
+      order_executor:
+        level: INFO
+      strategy_engine:
+        level: INFO
