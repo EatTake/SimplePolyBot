@@ -1,199 +1,121 @@
-# SimplePolyBot 配置文件
-# 包含策略参数、Redis连接配置、模块启动参数
-
-# ==================== 策略参数配置 ====================
 strategy:
-  # Base Cushion: 基础缓冲值，用于计算买入价格
-  # 公式: 买入价格 = 当前价格 - Base Cushion
-  base_cushion: 0.02
-  
-  # Alpha (α): 价格调整系数，用于动态调整买入价格
-  # 范围: 0.0 - 1.0，建议值: 0.3 - 0.7
-  alpha: 0.5
-  
-  # 最大买入价格表: 不同市场条件下的最大买入价格限制
-  # key: 市场类型或条件，value: 最大买入价格 (0.0 - 1.0)
+  base_cushion: 0.05
+  alpha: 0.7
   max_buy_prices:
-    default: 0.95          # 默认最大买入价格
-    high_confidence: 0.98  # 高置信度信号的最大买入价格
-    low_volatility: 0.92   # 低波动市场的最大买入价格
-    fast_market: 0.90      # 快速市场（如5分钟BTC）的最大买入价格
-  
-  # 订单大小配置
+    default: 0.95
+    high_confidence: 0.98
+    low_volatility: 0.92
+    fast_market: 0.9
   order_sizes:
-    default: 100           # 默认订单大小 (USDC)
-    min: 10                # 最小订单大小
-    max: 1000              # 最大订单大小
-  
-  # 风险管理参数
+    default: 100
+    min: 10
+    max: 1000
   risk_management:
-    max_position_size: 5000      # 单市场最大持仓 (USDC)
-    max_total_exposure: 20000    # 总风险敞口上限 (USDC)
-    max_daily_loss: 500          # 日最大亏损 (USDC)
-    max_drawdown: 0.15           # 最大回撤比例 (15%)
-    min_balance: 100             # 最小保留余额 (USDC)
-  
-  # 止损止盈配置
+    max_position_size: 5000
+    max_total_exposure: 20000
+    max_daily_loss: 500
+    max_drawdown: 0.15
+    min_balance: 100
   stop_loss_take_profit:
     enabled: true
-    stop_loss_percentage: 0.10   # 止损比例 (10%)
-    take_profit_percentage: 0.20 # 止盈比例 (20%)
-
-# ==================== Redis 连接配置 ====================
+    stop_loss_percentage: 0.1
+    take_profit_percentage: 0.2
 redis:
-  # Redis 服务器地址
-  host: "${REDIS_HOST:localhost}"
-  
-  # Redis 服务器端口
-  port: "${REDIS_PORT:6379}"
-  
-  # Redis 密码（如果设置了密码）
-  password: "${REDIS_PASSWORD:}"
-  
-  # Redis 数据库编号
-  db: "${REDIS_DB:0}"
-  
-  # 连接池配置
+  host: ${REDIS_HOST:localhost}
+  port: ${REDIS_PORT:6379}
+  password: ${REDIS_PASSWORD:}
+  db: ${REDIS_DB:0}
   pool:
-    max_connections: 50          # 最大连接数
-    min_idle_connections: 5      # 最小空闲连接数
-    connection_timeout: 5        # 连接超时（秒）
-    socket_timeout: 5            # Socket 超时（秒）
-  
-  # 重试配置
+    max_connections: 50
+    min_idle_connections: 5
+    connection_timeout: 5
+    socket_timeout: 5
   retry:
-    max_attempts: 3              # 最大重试次数
-    retry_delay: 1               # 重试延迟（秒）
-    exponential_backoff: true    # 是否使用指数退避
-
-# ==================== 模块启动参数 ====================
+    max_attempts: 3
+    retry_delay: 1
+    exponential_backoff: true
 modules:
-  # 市场数据收集器模块
   market_data_collector:
     enabled: true
-    # WebSocket 配置
     websocket:
-      url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-      reconnect_delay: 5         # 重连延迟（秒）
-      max_reconnect_attempts: 10 # 最大重连次数
-      ping_interval: 10          # 心跳间隔（秒）
-      pong_timeout: 10           # Pong 超时（秒）
-    
-    # 数据收集配置
+      url: wss://ws-subscriptions-clob.polymarket.com/ws/market
+      reconnect_delay: 5
+      max_reconnect_attempts: 10
+      ping_interval: 10
+      pong_timeout: 10
     collection:
-      markets_update_interval: 60    # 市场列表更新间隔（秒）
-      orderbook_depth: 20            # 订单簿深度
-      price_history_interval: 300    # 价格历史收集间隔（秒）
-  
-  # 策略引擎模块
+      markets_update_interval: 60
+      orderbook_depth: 20
+      price_history_interval: 300
   strategy_engine:
     enabled: true
-    # 策略执行配置
     execution:
-      signal_check_interval: 10      # 信号检查间隔（秒）
-      max_concurrent_orders: 5       # 最大并发订单数
-      order_timeout: 30              # 订单超时（秒）
-    
-    # 策略选择
+      signal_check_interval: 10
+      max_concurrent_orders: 5
+      order_timeout: 30
     active_strategies:
-      - "base_cushion"               # 基础缓冲策略
-      - "trend_following"            # 趋势跟踪策略
-    
-    # 信号过滤
+    - base_cushion
+    - trend_following
     signal_filter:
-      min_confidence: 0.6            # 最小信号置信度
-      min_volume: 100                # 最小交易量
-  
-  # 订单执行器模块
+      min_confidence: 0.6
+      min_volume: 100
   order_executor:
     enabled: true
-    # CLOB API 配置
     clob:
-      host: "https://clob.polymarket.com"
-      chain_id: 137                  # Polygon Chain ID
-      api_timeout: 30                # API 超时（秒）
-    
-    # 订单管理
+      host: https://clob.polymarket.com
+      chain_id: 137
+      api_timeout: 30
     order_management:
-      default_order_type: "GTC"      # 默认订单类型 (GTC/GTD/FOK/FAK)
-      max_order_age: 3600            # 订单最大存活时间（秒）
-      cancel_on_error: true          # 错误时是否取消订单
-    
-    # Gas 配置（用于链上交易）
+      default_order_type: GTC
+      max_order_age: 3600
+      cancel_on_error: true
     gas:
-      max_gas_price: 100             # 最大 Gas Price (Gwei)
-      gas_limit_multiplier: 1.2      # Gas Limit 乘数
-  
-  # 结算工作器模块
+      max_gas_price: 100
+      gas_limit_multiplier: 1.2
   settlement_worker:
     enabled: true
-    # 结算检查配置
     settlement:
-      check_interval: 60             # 结算检查间隔（秒）
-      batch_size: 50                 # 批量处理大小
-    
-    # 仓位管理
+      check_interval: 60
+      batch_size: 50
     position:
-      track_history: true            # 是否跟踪历史仓位
-      max_history_days: 30           # 历史仓位保留天数
-
-# ==================== API 配置 ====================
+      track_history: true
+      max_history_days: 30
 api:
-  # Polymarket API 凭证（从环境变量读取）
   polymarket:
-    api_key: "${POLYMARKET_API_KEY}"
-    api_secret: "${POLYMARKET_API_SECRET}"
-    api_passphrase: "${POLYMARKET_API_PASSPHRASE}"
-  
-  # Polygon RPC 配置
+    api_key: ${POLYMARKET_API_KEY}
+    api_secret: ${POLYMARKET_API_SECRET}
+    api_passphrase: ${POLYMARKET_API_PASSPHRASE}
   polygon:
-    rpc_url: "${POLYGON_RPC_URL:https://polygon-rpc.com}"
-  
-  # Gamma API 配置
+    rpc_url: ${POLYGON_RPC_URL:https://polygon-rpc.com}
   gamma:
-    base_url: "https://gamma-api.polymarket.com"
+    base_url: https://gamma-api.polymarket.com
     timeout: 30
-
-# ==================== 通知配置 ====================
 notifications:
-  # 邮件通知配置
   email:
     enabled: false
-    smtp_server: "${SMTP_SERVER:smtp.gmail.com}"
-    smtp_port: "${SMTP_PORT:587}"
-    smtp_username: "${SMTP_USERNAME}"
-    smtp_password: "${SMTP_PASSWORD}"
-    alert_email: "${ALERT_EMAIL}"
-  
-  # Webhook 通知配置
+    smtp_server: ${SMTP_SERVER:smtp.gmail.com}
+    smtp_port: ${SMTP_PORT:587}
+    smtp_username: ${SMTP_USERNAME}
+    smtp_password: ${SMTP_PASSWORD}
+    alert_email: ${ALERT_EMAIL}
   webhook:
     enabled: false
-    url: "${WEBHOOK_URL}"
-  
-  # 通知触发条件
+    url: ${WEBHOOK_URL}
   triggers:
-    on_order_filled: true           # 订单成交时通知
-    on_position_closed: true        # 仓位关闭时通知
-    on_error: true                  # 错误时通知
-    on_large_loss: true             # 大额亏损时通知
-    large_loss_threshold: 100       # 大额亏损阈值 (USDC)
-
-# ==================== 系统配置 ====================
+    on_order_filled: true
+    on_position_closed: true
+    on_error: true
+    on_large_loss: true
+    large_loss_threshold: 100
 system:
-  # 运行环境 (development/staging/production)
-  environment: "development"
-  
-  # 日志级别 (DEBUG/INFO/WARNING/ERROR/CRITICAL)
-  log_level: "INFO"
-  
-  # 性能监控
+  environment: development
+  log_level: INFO
   monitoring:
     enabled: true
-    metrics_port: 9090              # Prometheus metrics 端口
-    health_check_port: 8080         # 健康检查端口
-  
-  # 数据持久化
+    metrics_port: 9090
+    health_check_port: 8080
   persistence:
-    data_dir: "./data"              # 数据目录
-    backup_enabled: true            # 是否启用备份
-    backup_interval: 86400          # 备份间隔（秒）
+    data_dir: ./data
+    backup_enabled: true
+    backup_interval: 86400
+new_key: new_value

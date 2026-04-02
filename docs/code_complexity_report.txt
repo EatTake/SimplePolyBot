@@ -1,0 +1,84 @@
+# 代码复杂度分析报告
+
+**生成时间**: 2026-04-02  
+**分析工具**: radon 6.0.1  
+**分析范围**: modules/, shared/  
+
+---
+
+## 执行摘要
+
+- **总函数数（复杂度 > 5）**: 39 个
+- **最高复杂度**: **13 (C 级)** - `shared/logger.py::filter_sensitive_data`
+- **平均复杂度**: ~7.8 (B 级)
+- **需要重构的函数（>15）**: **无** ✅
+
+---
+
+## 复杂度排名（Top 20）
+
+| 排名 | 复杂度 | 等级 | 文件::函数名 |
+|------|--------|------|-------------|
+| 1 | 13 | C | `shared/logger.py::filter_sensitive_data` |
+| 2 | 12 | C | `modules/market_data_collector/binance_ws.py::listen` |
+| 3 | 10 | B | `modules/order_executor/order_manager.py::execute_buy_order` |
+| 4 | 9 | B | `modules/order_executor/order_manager.py::get_statistics` |
+| 5 | 9 | B | `modules/settlement_worker/redemption_manager.py::fetch_resolved_markets` |
+| 6 | 9 | B | `modules/strategy_engine/main.py::_execute_strategy_cycle` |
+| 7 | 9 | B | `shared/config.py::StrategyConfig` (类初始化) |
+| 8 | 8 | B | `modules/order_executor/clob_client.py::get_trades` |
+| 9 | 8 | B | `modules/order_executor/redis_subscriber.py::_handle_message` |
+| 10 | 8 | B | `modules/settlement_worker/ctf_contract.py::redeem_positions` |
+| 11 | 8 | B | `modules/strategy_engine/redis_subscriber.py::_subscribe_and_listen` |
+| 12 | 8 | B | `shared/config.py::validate` |
+| 13 | 8 | B | `shared/redis_client.py::subscribe_channel` (x2) |
+| 14 | 7 | B | `modules/order_executor/clob_client.py::initialize` |
+| 15 | 7 | B | `modules/order_executor/order_manager.py::validate_price` |
+| 16 | 7 | B | `modules/order_executor/order_manager.py::check_order_book_depth` |
+| 17 | 7 | B | `modules/order_executor/order_manager.py::execute_sell_order` |
+| 18 | 7 | B | `modules/settlement_worker/ctf_contract.py::batch_redeem_positions` |
+| 19 | 7 | B | `modules/settlement_worker/main.py::get_health` |
+| 20 | 7 | B | `modules/settlement_worker/redemption_manager.py::redeem_market` |
+
+---
+
+## 复杂度分布
+
+### 按等级分布
+
+| 等级 | 复杂度范围 | 函数数量 | 占比 |
+|------|-----------|---------|------|
+| A (优秀) | 1-5 | - | - |
+| B (良好) | 6-10 | 35 | 89.7% |
+| C (一般) | 11-20 | 4 | 10.3% |
+| D (警告) | 21-30 | 0 | 0% |
+| E (危险) | 31+ | 0 | 0% |
+
+### 按模块分布
+
+| 模块 | 高复杂度函数数 | 最高复杂度 | 平均复杂度 |
+|------|---------------|-----------|-----------|
+| shared/ | 4 | 13 | 9.25 |
+| modules/market_data_collector/ | 1 | 12 | 12.0 |
+| modules/order_executor/ | 10 | 10 | 7.30 |
+| modules/settlement_worker/ | 9 | 9 | 7.78 |
+| modules/strategy_engine/ | 6 | 9 | 7.50 |
+
+---
+
+## 结论与建议
+
+### ✅ 积极发现
+1. **无危险级别函数**：所有函数复杂度均 < 15，代码质量整体良好
+2. **B级占主导**：89.7% 的函数处于良好级别
+3. **模块化设计合理**：各模块复杂度分布均匀
+
+### ⚠️ 需关注
+1. **`filter_sensitive_data` (C=13)**: 递归深度较深，可考虑优化
+2. **`BinanceWebSocketClient.listen` (C=12)**: 异常处理逻辑较多，可提取子方法
+3. **`execute_buy_order` (B=10)**: 订单执行流程较长，可拆分验证和执行步骤
+
+### 建议操作
+由于最高复杂度为 13（< 15），**当前无需进行强制重构**。建议在后续迭代中：
+- 对复杂度 > 10 的函数进行监控
+- 新增代码时保持单函数复杂度 < 10

@@ -16,6 +16,96 @@ import structlog
 logger = structlog.get_logger()
 
 
+class AdaptiveConnectionPool:
+    """
+    自适应连接池管理器
+    根据系统负载动态调整连接池大小，支持扩容和缩容操作
+    
+    扩容策略：当负载超过高阈值时，连接池大小翻倍（不超过最大值）
+    缩容策略：当负载低于低阈值时，连接池大小减半（不低于初始值）
+    """
+
+    def __init__(
+        self,
+        initial_size: int = 10,
+        max_size: int = 100,
+        load_threshold_high: float = 0.8,
+        load_threshold_low: float = 0.3,
+    ):
+        self.initial_size = initial_size
+        self.max_size = max_size
+        self.load_threshold_high = load_threshold_high
+        self.load_threshold_low = load_threshold_low
+        self.current_size = initial_size
+        self.adjustment_history: List[Dict] = []
+
+    def adjust_pool_size(self, current_load: float) -> Dict[str, Any]:
+        """
+        根据当前负载调整连接池大小
+        
+        Args:
+            current_load: 当前负载 (0.0 - 1.0)
+        
+        Returns:
+            调整结果字典，包含 adjusted、old_size、new_size、direction 等字段
+        """
+        old_size = self.current_size
+
+        if current_load > self.load_threshold_high and self.current_size < self.max_size:
+            new_size = min(int(self.current_size * 2), self.max_size)
+            self.current_size = new_size
+            record = {
+                "timestamp": time.time(),
+                "old_size": old_size,
+                "new_size": new_size,
+                "direction": "expand",
+                "load": current_load,
+            }
+            self.adjustment_history.append(record)
+            return {
+                "adjusted": True,
+                "old_size": old_size,
+                "new_size": new_size,
+                "direction": "expand",
+            }
+        elif current_load < self.load_threshold_low and self.current_size > self.initial_size:
+            new_size = max(self.current_size // 2, self.initial_size)
+            self.current_size = new_size
+            record = {
+                "timestamp": time.time(),
+                "old_size": old_size,
+                "new_size": new_size,
+                "direction": "shrink",
+                "load": current_load,
+            }
+            self.adjustment_history.append(record)
+            return {
+                "adjusted": True,
+                "old_size": old_size,
+                "new_size": new_size,
+                "direction": "shrink",
+            }
+
+        return {"adjusted": False, "current_size": self.current_size}
+
+    def get_status(self) -> Dict[str, Any]:
+        """
+        获取当前连接池状态
+        
+        Returns:
+            包含当前状态信息的字典
+        """
+        return {
+            "current_size": self.current_size,
+            "max_size": self.max_size,
+            "initial_size": self.initial_size,
+            "utilization": round(self.current_size / self.max_size, 4),
+            "load_threshold_high": self.load_threshold_high,
+            "load_threshold_low": self.load_threshold_low,
+            "total_adjustments": len(self.adjustment_history),
+        }
+
+
 class RedisClientError(Exception):
     """Redis 客户端异常"""
     pass
@@ -67,6 +157,11 @@ class RedisClient:
         self._pubsub = None
         self._is_connected = False
         self._reconnect_count = 0
+        self._operation_count = 0
+        self.adaptive_pool = AdaptiveConnectionPool(
+            initial_size=config.min_connections,
+            max_size=config.max_connections,
+        )
         
         logger.info(
             "初始化 Redis 客户端",
@@ -288,6 +383,7 @@ class RedisClient:
             发布是否成功
         """
         try:
+            self._operation_count += 1
             if isinstance(message, (dict, list)):
                 message = json.dumps(message)
             
@@ -315,6 +411,7 @@ class RedisClient:
             订阅是否成功
         """
         try:
+            self._operation_count += 1
             if isinstance(channels, str):
                 channels = [channels]
             

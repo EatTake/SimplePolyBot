@@ -1,0 +1,33 @@
+# ========================================
+# SimplePolyBot 激进型配置方案
+# ========================================
+# 适用场景：经验丰富的交易者、低波动市场、高确信度
+# 特点：大仓位、低缓冲、激进风控
+# ========================================
+
+strategy:
+  base_cushion: 0.01           # 低基础缓冲
+  alpha: 0.7                   # 高价格调整系数
+
+  max_buy_prices:
+    default: 0.98              # 允许高价买入
+    high_confidence: 0.99
+    low_volatility: 0.96
+    fast_market: 0.95
+
+  order_sizes:
+    default: 200                # 大仓位
+    min: 10
+    max: 2000
+
+  risk_management:
+    max_position_size: 8000    # 放宽单仓限制
+    max_total_exposure: 30000  # 提高总敞口
+    max_daily_loss: 1000       # 高日亏损限额
+    max_drawdown: 0.20          # 高回撤容忍
+    min_balance: 50             # 低保留余额
+
+  stop_loss_take_profit:
+    enabled: true
+    stop_loss_percentage: 0.15  # 宽止损
+    take_profit_percentage: 0.30  # 高止盈目标

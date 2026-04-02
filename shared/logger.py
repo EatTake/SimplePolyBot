@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 结构化日志模块
 
@@ -16,7 +18,8 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+
+from typing import Any
 
 import structlog
 from structlog.types import Processor
@@ -131,7 +134,7 @@ def get_log_level(level: str) -> int:
 
 def setup_logging(
     log_level: str = 'INFO',
-    log_dir: Optional[str] = None,
+    log_dir: str | None = None,
     log_file: str = 'app.log',
     max_bytes: int = 10 * 1024 * 1024,
     backup_count: int = 5,
@@ -209,7 +212,7 @@ def setup_logging(
         root_logger.addHandler(file_handler)
 
 
-def get_logger(name: Optional[str] = None) -> structlog.stdlib.BoundLogger:
+def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     """
     获取日志记录器实例
     
@@ -237,7 +240,7 @@ class LoggerMixin:
     为类提供便捷的日志记录功能
     """
     
-    _logger: Optional[structlog.stdlib.BoundLogger] = None
+    _logger: structlog.stdlib.BoundLogger | None = None
     
     @property
     def logger(self) -> structlog.stdlib.BoundLogger:

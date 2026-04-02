@@ -5,14 +5,20 @@
 支持从 .env 文件和 YAML 文件加载配置
 """
 
+from __future__ import annotations
+
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Union
 from dataclasses import dataclass, field
 
 import yaml
 from dotenv import load_dotenv
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .parameter_registry import ParameterRegistry, ParameterInfo
 
 
 class ConfigError(Exception):
@@ -62,25 +68,25 @@ class StrategyConfig:
     """策略参数配置"""
     base_cushion: float = 0.02
     alpha: float = 0.5
-    max_buy_prices: Dict[str, float] = field(default_factory=lambda: {
+    max_buy_prices: dict[str, float] = field(default_factory=lambda: {
         "default": 0.95,
         "high_confidence": 0.98,
         "low_volatility": 0.92,
         "fast_market": 0.90
     })
-    order_sizes: Dict[str, int] = field(default_factory=lambda: {
+    order_sizes: dict[str, int] = field(default_factory=lambda: {
         "default": 100,
         "min": 10,
         "max": 1000
     })
-    risk_management: Dict[str, Any] = field(default_factory=lambda: {
+    risk_management: dict[str, Any] = field(default_factory=lambda: {
         "max_position_size": 5000,
         "max_total_exposure": 20000,
         "max_daily_loss": 500,
         "max_drawdown": 0.15,
         "min_balance": 100
     })
-    stop_loss_take_profit: Dict[str, Any] = field(default_factory=lambda: {
+    stop_loss_take_profit: dict[str, Any] = field(default_factory=lambda: {
         "enabled": True,
         "stop_loss_percentage": 0.10,
         "take_profit_percentage": 0.20
@@ -119,7 +125,7 @@ class StrategyConfig:
 class ModuleConfig:
     """模块配置"""
     enabled: bool = True
-    config: Dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
 
 
 class Config:
@@ -134,8 +140,8 @@ class Config:
     5. 支持环境变量替换
     """
     
-    _instance: Optional['Config'] = None
-    _config_cache: Dict[str, Any] = field(default_factory=dict)
+    _instance: Config | None = None
+    _config_cache: dict[str, Any] = field(default_factory=dict)
     
     def __new__(cls) -> 'Config':
         """单例模式"""
@@ -149,7 +155,7 @@ class Config:
         if self._initialized:
             return
         
-        self._config: Dict[str, Any] = {}
+        self._config: dict[str, Any] = {}
         self._env_loaded: bool = False
         self._config_loaded: bool = False
         self._initialized = True
@@ -158,7 +164,7 @@ class Config:
         self._config_path = self._base_path / "config"
         self._env_file = self._base_path / ".env"
     
-    def load_env(self, env_file: Optional[str] = None) -> None:
+    def load_env(self, env_file: str | None = None) -> None:
         """
         从 .env 文件加载环境变量
         
@@ -260,7 +266,7 @@ class Config:
         if not self._config_loaded:
             raise ConfigError("配置尚未加载，请先调用 load_yaml()")
         
-        errors: List[str] = []
+        errors: list[str] = []
         
         try:
             redis_config = self.get_redis_config()
@@ -364,17 +370,105 @@ class Config:
             config=module_data
         )
     
-    def get_all(self) -> Dict[str, Any]:
+    def get_all(self) -> dict[str, Any]:
         """
         获取所有配置
-        
+
         Returns:
             完整配置字典
         """
         if not self._config_loaded:
             raise ConfigError("配置尚未加载，请先调用 load_yaml()")
-        
+
         return self._config.copy()
+
+    def get_parameter_info(self, key: str) -> ParameterInfo | None:
+        """
+        获取参数详细信息
+
+        Args:
+            key: 配置键路径，如 "strategy.alpha"
+
+        Returns:
+            ParameterInfo 对象，如果不存在返回 None
+        """
+        from .parameter_registry import ParameterRegistry
+
+        registry = ParameterRegistry.get_instance()
+        return registry.get(key)
+
+    def get_all_parameters(self, category: str = None) -> list[ParameterInfo]:
+        """
+        获取参数列表，可按类别过滤
+
+        Args:
+            category: 可选，类别名称（strategy/connection/module/api/system）
+
+        Returns:
+            参数信息列表
+        """
+        from .parameter_registry import ParameterRegistry
+
+        registry = ParameterRegistry.get_instance()
+        return registry.get_all(category)
+
+    def get_parameter_schema(self) -> dict:
+        """
+        获取 JSON Schema 格式的参数定义
+
+        Returns:
+            符合 JSON Schema draft-07 规范的字典
+        """
+        from .parameter_registry import ParameterRegistry
+
+        registry = ParameterRegistry.get_instance()
+        schema = {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "title": "SimplePolyBot Configuration",
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+
+        for param in registry.get_all():
+            prop = {
+                "type": self._python_type_to_json(param.type),
+                "description": param.description,
+                "default": param.default,
+            }
+
+            if param.range:
+                prop["minimum"] = param.range[0]
+                prop["maximum"] = param.range[1]
+
+            if param.choices:
+                prop["enum"] = param.choices
+
+            if param.required:
+                schema["required"].append(param.key)
+
+            keys = param.key.split('.')
+            current = schema["properties"]
+            for k in keys[:-1]:
+                if k not in current:
+                    current[k] = {"type": "object", "properties": {}}
+                current = current[k]["properties"]
+            current[keys[-1]] = prop
+
+        return schema
+
+    @staticmethod
+    def _python_type_to_json(py_type: type) -> str:
+        """将 Python 类型映射为 JSON 类型"""
+        mapping = {
+            int: "integer",
+            float: "number",
+            bool: "boolean",
+            str: "string",
+            list: "array",
+            dict: "object",
+        }
+        return mapping.get(py_type, "string")
     
     def reload(self) -> None:
         """重新加载配置"""
@@ -395,7 +489,7 @@ class Config:
 
 
 def load_config(
-    env_file: Optional[str] = None,
+    env_file: str | None = None,
     config_file: str = "settings.yaml",
     validate: bool = True
 ) -> Config:

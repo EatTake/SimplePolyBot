@@ -92,14 +92,14 @@ class FeeCalculator:
         if price_factor == 0:
             return 0.0
         
-        fee = (
+        fee_decimal = (
             Decimal(str(shares))
             * Decimal(str(fee_rate))
             * price_decimal
             * (price_factor ** Decimal(str(exponent)))
         )
         
-        fee = float(fee.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
+        fee = float(fee_decimal.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
         
         if fee < 0.0001:
             fee = 0.0

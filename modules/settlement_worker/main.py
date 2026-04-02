@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from shared.logger import get_logger, setup_logging
 from shared.config import Config, load_config
 from shared.constants import POLYGON_RPC_URL
+from shared.error_context import ErrorContext
 from modules.settlement_worker.ctf_contract import CTFContract, CTFContractError
 from modules.settlement_worker.redemption_manager import RedemptionManager
 
@@ -145,23 +146,25 @@ class SettlementWorker:
         )
         
         try:
-            result = await self._redemption_manager.run_redemption_cycle()
-            self._last_run_result = result
-            
-            logger.info(
-                "赎回周期执行完成",
-                run_number=self._total_runs,
-                successful=result.get('successful', 0),
-                failed=result.get('failed', 0),
-            )
-            
-            return result
-            
+            with ErrorContext("run_redemption_cycle", run_number=self._total_runs) as ctx:
+                result = await self._redemption_manager.run_redemption_cycle()
+                self._last_run_result = result
+                
+                logger.info(
+                    "赎回周期执行完成",
+                    run_number=self._total_runs,
+                    successful=result.get('successful', 0),
+                    failed=result.get('failed', 0),
+                )
+                
+                return result
+                
         except Exception as e:
             logger.error(
                 "赎回周期执行失败",
                 run_number=self._total_runs,
                 error=str(e),
+                error_context=ctx.to_dict(),
             )
             
             self._last_run_result = {

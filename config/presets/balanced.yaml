@@ -1,0 +1,33 @@
+# ========================================
+# SimplePolyBot 平衡型配置方案
+# ========================================
+# 适用场景：大多数用户、一般市场条件 [推荐]
+# 特点：中等仓位、适中缓冲、均衡风控
+# ========================================
+
+strategy:
+  base_cushion: 0.02           # 标准基础缓冲
+  alpha: 0.5                   # 标准价格调整系数
+
+  max_buy_prices:
+    default: 0.95              # 标准最大买入价
+    high_confidence: 0.98
+    low_volatility: 0.92
+    fast_market: 0.90
+
+  order_sizes:
+    default: 100               # 中等仓位
+    min: 10
+    max: 1000
+
+  risk_management:
+    max_position_size: 5000    # 标准单仓限制
+    max_total_exposure: 20000  # 标准总敞口
+    max_daily_loss: 500        # 标准日亏损限额
+    max_drawdown: 0.15          # 标准回撤容忍
+    min_balance: 100            # 标准保留余额
+
+  stop_loss_take_profit:
+    enabled: true
+    stop_loss_percentage: 0.10  # 标准止损
+    take_profit_percentage: 0.20  # 标准止盈

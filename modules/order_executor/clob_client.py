@@ -10,10 +10,8 @@ CLOB 客户端封装模块
 """
 
 import os
-import time
-import functools
-from typing import Any, Dict, List, Optional, Callable, TypeVar
-from decimal import Decimal
+import re
+from typing import Any, Dict, List, Optional
 
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType, TradeParams
@@ -25,73 +23,35 @@ from shared.constants import (
     POLYGON_CHAIN_ID,
     SIGNER_TYPE_EOA,
 )
+from shared.retry_decorator import with_retry, ClobClientError
+from shared.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
+from shared.error_context import ErrorContext
 
 logger = structlog.get_logger()
 
-T = TypeVar('T')
 
-DEFAULT_MAX_RETRIES = 3
-DEFAULT_RETRY_DELAY = 1.0
-DEFAULT_RETRY_BACKOFF = 2.0
-
-
-def with_retry(
-    max_retries: int = DEFAULT_MAX_RETRIES,
-    retry_delay: float = DEFAULT_RETRY_DELAY,
-    backoff_factor: float = DEFAULT_RETRY_BACKOFF,
-    retryable_exceptions: tuple = (Exception,),
-) -> Callable:
+def validate_private_key(private_key: Optional[str]) -> bool:
     """
-    重试装饰器
-    
+    验证私钥格式
+
     Args:
-        max_retries: 最大重试次数
-        retry_delay: 初始重试延迟（秒）
-        backoff_factor: 退避因子
-        retryable_exceptions: 可重试的异常类型
-    
+        private_key: 私钥字符串
+
     Returns:
-        装饰后的函数
+        True: 格式正确
+
+    Raises:
+        ClobClientError: 空值或格式错误
     """
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs) -> T:
-            last_exception = None
-            delay = retry_delay
-            
-            for attempt in range(max_retries + 1):
-                try:
-                    return func(*args, **kwargs)
-                except retryable_exceptions as e:
-                    last_exception = e
-                    if attempt < max_retries:
-                        logger.warning(
-                            "API调用失败，准备重试",
-                            function=func.__name__,
-                            attempt=attempt + 1,
-                            max_retries=max_retries,
-                            delay=delay,
-                            error=str(e)
-                        )
-                        time.sleep(delay)
-                        delay *= backoff_factor
-                    else:
-                        logger.error(
-                            "API调用失败，已达到最大重试次数",
-                            function=func.__name__,
-                            attempts=attempt + 1,
-                            error=str(e)
-                        )
-            
-            raise ClobClientError(f"重试{max_retries}次后仍然失败: {last_exception}")
-        
-        return wrapper
-    return decorator
+    pattern = r'^0x[a-fA-F0-9]{64}$'
 
+    if not private_key or not private_key.strip():
+        raise ClobClientError("缺少私钥配置，请设置 PRIVATE_KEY 环境变量")
 
-class ClobClientError(Exception):
-    """CLOB 客户端异常"""
-    pass
+    if not re.match(pattern, private_key):
+        raise ClobClientError("私钥格式无效，应为 0x 开头的 64 位十六进制字符串")
+
+    return True
 
 
 class ClobClientWrapper:
@@ -110,6 +70,7 @@ class ClobClientWrapper:
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
         api_passphrase: Optional[str] = None,
+        auto_validate: bool = False,
     ):
         """
         初始化 CLOB 客户端
@@ -121,25 +82,32 @@ class ClobClientWrapper:
             api_key: API Key
             api_secret: API Secret
             api_passphrase: API Passphrase
+            auto_validate: 初始化后是否自动验证 API 凭证（默认 False）
         """
         self.host = host
         self.chain_id = chain_id
         self.private_key = private_key or os.getenv("PRIVATE_KEY")
-        
-        if not self.private_key:
-            raise ClobClientError("缺少私钥配置，请设置 PRIVATE_KEY 环境变量")
-        
+
+        validate_private_key(self.private_key)
+
         self.api_key = api_key or os.getenv("POLYMARKET_API_KEY")
         self.api_secret = api_secret or os.getenv("POLYMARKET_API_SECRET")
         self.api_passphrase = api_passphrase or os.getenv("POLYMARKET_API_PASSPHRASE")
+        self.auto_validate = auto_validate
         
         self._client: Optional[ClobClient] = None
         self._funder_address: Optional[str] = None
         
+        self._circuit_breaker = CircuitBreaker(
+            failure_threshold=5,
+            timeout_seconds=60.0,
+        )
+        
         logger.info(
             "初始化 CLOB 客户端封装",
             host=host,
-            chain_id=chain_id
+            chain_id=chain_id,
+            auto_validate=auto_validate
         )
     
     def initialize(self) -> None:
@@ -150,61 +118,67 @@ class ClobClientWrapper:
         如果没有 API 凭证，则自动派生
         """
         try:
-            if self.api_key and self.api_secret and self.api_passphrase:
-                api_creds = ApiCreds(
-                    api_key=self.api_key,
-                    api_secret=self.api_secret,
-                    api_passphrase=self.api_passphrase
-                )
+            with ErrorContext("initialize_clob_client", host=self.host, chain_id=self.chain_id) as ctx:
+                if self.api_key and self.api_secret and self.api_passphrase:
+                    api_creds = ApiCreds(
+                        api_key=self.api_key,
+                        api_secret=self.api_secret,
+                        api_passphrase=self.api_passphrase
+                    )
+                    
+                    temp_client = ClobClient(
+                        host=self.host,
+                        key=self.private_key,
+                        chain_id=self.chain_id
+                    )
+                    self._funder_address = temp_client.get_address()
+                    
+                    self._client = ClobClient(
+                        host=self.host,
+                        key=self.private_key,
+                        chain_id=self.chain_id,
+                        creds=api_creds,
+                        signature_type=SIGNER_TYPE_EOA,
+                        funder=self._funder_address
+                    )
+                    
+                    logger.info(
+                        "使用现有 API 凭证初始化客户端",
+                        funder_address=self._funder_address
+                    )
+                else:
+                    temp_client = ClobClient(
+                        host=self.host,
+                        key=self.private_key,
+                        chain_id=self.chain_id
+                    )
+                    
+                    api_creds = temp_client.create_or_derive_api_creds()
+                    self._funder_address = temp_client.get_address()
+                    
+                    self._client = ClobClient(
+                        host=self.host,
+                        key=self.private_key,
+                        chain_id=self.chain_id,
+                        creds=api_creds,
+                        signature_type=SIGNER_TYPE_EOA,
+                        funder=self._funder_address
+                    )
+                    
+                    logger.info(
+                        "自动派生 API 凭证并初始化客户端",
+                        funder_address=self._funder_address
+                    )
                 
-                temp_client = ClobClient(
-                    host=self.host,
-                    key=self.private_key,
-                    chain_id=self.chain_id
-                )
-                self._funder_address = temp_client.get_address()
+                self._verify_connection()
                 
-                self._client = ClobClient(
-                    host=self.host,
-                    key=self.private_key,
-                    chain_id=self.chain_id,
-                    creds=api_creds,
-                    signature_type=SIGNER_TYPE_EOA,
-                    funder=self._funder_address
-                )
-                
-                logger.info(
-                    "使用现有 API 凭证初始化客户端",
-                    funder_address=self._funder_address
-                )
-            else:
-                temp_client = ClobClient(
-                    host=self.host,
-                    key=self.private_key,
-                    chain_id=self.chain_id
-                )
-                
-                api_creds = temp_client.create_or_derive_api_creds()
-                self._funder_address = temp_client.get_address()
-                
-                self._client = ClobClient(
-                    host=self.host,
-                    key=self.private_key,
-                    chain_id=self.chain_id,
-                    creds=api_creds,
-                    signature_type=SIGNER_TYPE_EOA,
-                    funder=self._funder_address
-                )
-                
-                logger.info(
-                    "自动派生 API 凭证并初始化客户端",
-                    funder_address=self._funder_address
-                )
-            
-            self._verify_connection()
+                if self.auto_validate:
+                    is_valid = self.validate_api_credentials()
+                    if not is_valid:
+                        raise ClobClientError("API 凭证验证失败")
             
         except Exception as e:
-            logger.error("初始化 CLOB 客户端失败", error=str(e))
+            logger.error("初始化 CLOB 客户端失败", error=str(e), error_context=ctx.to_dict())
             raise ClobClientError(f"初始化客户端失败: {e}")
     
     def _verify_connection(self) -> None:
@@ -214,6 +188,29 @@ class ClobClientWrapper:
             logger.info("CLOB 客户端连接验证成功", server_time=server_time)
         except Exception as e:
             raise ClobClientError(f"客户端连接验证失败: {e}")
+    
+    def validate_api_credentials(self) -> bool:
+        """
+        验证 API 凭证是否有效
+        
+        通过尝试获取 USDC.e 余额来验证 API 凭证的有效性。
+        捕获所有异常（网络超时、认证失败等）。
+        
+        Returns:
+            True: 凭证有效
+            False: 凭证无效或验证过程中发生错误
+        """
+        try:
+            balance = self.get_usdc_balance()
+            
+            logger.info("API 凭证验证成功", balance=balance)
+            
+            return True
+            
+        except Exception as e:
+            logger.error("API 凭证验证失败", error=str(e))
+            
+            return False
     
     @property
     def client(self) -> ClobClient:
@@ -231,23 +228,18 @@ class ClobClientWrapper:
     
     @with_retry(max_retries=3, retry_delay=1.0, backoff_factor=2.0)
     def get_usdc_balance(self) -> float:
-        """
-        查询 USDC.e 余额
-        
-        Returns:
-            USDC.e 余额
-        """
         try:
-            balance_info = self.client.get_balance_allowance(
-                asset_type="COLLATERAL"
-            )
-            
-            balance = float(balance_info.get("balance", 0))
-            
-            logger.debug("查询 USDC.e 余额", balance=balance)
-            
-            return balance
-            
+            with ErrorContext("get_balance", asset_type="COLLATERAL") as ctx:
+                balance_info = self.client.get_balance_allowance(
+                    asset_type="COLLATERAL"
+                )
+                
+                balance = float(balance_info.get("balance", 0))
+                
+                logger.debug("查询 USDC.e 余额", balance=balance)
+                
+                return balance
+                
         except Exception as e:
             logger.error("查询 USDC.e 余额失败", error=str(e))
             raise ClobClientError(f"查询余额失败: {e}")
@@ -553,12 +545,16 @@ class ClobClientWrapper:
         Returns:
             订单响应
         """
-        try:
+        def _execute():
             if tick_size is None:
-                tick_size = self.get_tick_size(token_id)
+                _tick_size = self.get_tick_size(token_id)
+            else:
+                _tick_size = tick_size
             
             if neg_risk is None:
-                neg_risk = self.get_neg_risk(token_id)
+                _neg_risk = self.get_neg_risk(token_id)
+            else:
+                _neg_risk = neg_risk
             
             order_side = BUY if side.upper() == "BUY" else SELL
             order_type_enum = OrderType[order_type.upper()]
@@ -573,27 +569,43 @@ class ClobClientWrapper:
             response = self.client.create_and_post_order(
                 order_args,
                 options={
-                    "tick_size": tick_size,
-                    "neg_risk": neg_risk
+                    "tick_size": _tick_size,
+                    "neg_risk": _neg_risk
                 },
                 order_type=order_type_enum
             )
             
-            logger.info(
-                "创建并提交订单",
+            return response
+
+        try:
+            with ErrorContext(
+                "create_and_submit_order",
                 token_id=token_id,
                 price=price,
                 size=size,
                 side=side,
                 order_type=order_type,
-                order_id=response.get("orderID"),
-                status=response.get("status")
-            )
-            
-            return response
-            
+            ) as ctx:
+                response = self._circuit_breaker.call(_execute)
+                
+                logger.info(
+                    "创建并提交订单",
+                    token_id=token_id,
+                    price=price,
+                    size=size,
+                    side=side,
+                    order_type=order_type,
+                    order_id=response.get("orderID"),
+                    status=response.get("status")
+                )
+                
+                return response
+                
+        except CircuitBreakerOpenError as e:
+            logger.error("断路器打开，订单被拒绝", error=str(e))
+            raise ClobClientError(f"断路器打开，订单被拒绝: {e}")
         except Exception as e:
-            logger.error("创建并提交订单失败", error=str(e))
+            logger.error("创建并提交订单失败", error=str(e), error_context=ctx.to_dict())
             raise ClobClientError(f"创建并提交订单失败: {e}")
     
     def create_market_order(

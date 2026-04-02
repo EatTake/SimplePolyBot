@@ -148,7 +148,11 @@ class OrderExecutor:
                 )
                 return
             
-            result: Optional[OrderResult] = None
+            result: OrderResult | None = None
+            
+            if self.order_manager is None:
+                logger.error("订单管理器未初始化")
+                return
             
             if signal.side == "BUY":
                 result = self.order_manager.execute_buy_order(
@@ -195,6 +199,10 @@ class OrderExecutor:
             result: 订单执行结果
         """
         try:
+            if self.redis_client is None:
+                logger.error("Redis 客户端未初始化，无法发布交易结果")
+                return
+            
             trade_result = {
                 "signal_id": signal.signal_id,
                 "token_id": signal.token_id,
@@ -236,6 +244,10 @@ class OrderExecutor:
         logger.info("启动订单执行器")
         
         try:
+            if self.redis_subscriber is None:
+                logger.error("Redis 订阅者未初始化")
+                return
+            
             self.redis_subscriber.start()
             
             logger.info("订单执行器已启动，等待交易信号...")

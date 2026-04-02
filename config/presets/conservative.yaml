@@ -1,0 +1,33 @@
+# ========================================
+# SimplePolyBot 保守型配置方案
+# ========================================
+# 适用场景：新手用户、高波动市场、学习阶段
+# 特点：低仓位、高缓冲、严格风控
+# ========================================
+
+strategy:
+  base_cushion: 0.03           # 较高的基础缓冲
+  alpha: 0.3                   # 低价格调整系数
+
+  max_buy_prices:
+    default: 0.90              # 限制最大买入价
+    high_confidence: 0.93
+    low_volatility: 0.88
+    fast_market: 0.85
+
+  order_sizes:
+    default: 50                 # 小仓位起步
+    min: 10
+    max: 500
+
+  risk_management:
+    max_position_size: 2000    # 严格控制单仓
+    max_total_exposure: 8000   # 控制总敞口
+    max_daily_loss: 200        # 低日亏损限额
+    max_drawdown: 0.10          # 低回撤容忍
+    min_balance: 200            # 高保留余额
+
+  stop_loss_take_profit:
+    enabled: true
+    stop_loss_percentage: 0.08  # 早止损
+    take_profit_percentage: 0.15  # 早止盈

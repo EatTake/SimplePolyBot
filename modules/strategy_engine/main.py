@@ -8,12 +8,13 @@
 import signal
 import sys
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from shared.logger import get_logger
 from shared.config import Config, load_config
 from shared.redis_client import RedisClient, RedisConnectionConfig
 from shared.constants import MARKET_DATA_CHANNEL, FAST_MARKET_DURATION_SECONDS
+from shared.error_context import ErrorContext
 
 from modules.strategy_engine.redis_subscriber import RedisSubscriber
 from modules.strategy_engine.price_queue import PriceQueue
@@ -47,6 +48,11 @@ class StrategyEngine:
         
         self._running = False
         self._shutdown_requested = False
+        
+        self._message_buffer: List[Dict[str, Any]] = []
+        self._last_batch_process_time = 0.0
+        self._batch_size_threshold = 10
+        self._batch_timeout_seconds = 1.0
         
         self._setup_signal_handlers()
         
@@ -155,7 +161,7 @@ class StrategyEngine:
         
         每秒执行一次策略判断
         """
-        last_check_time = 0
+        last_check_time: float = 0.0
         check_interval = 1.0
         
         while self._running and not self._shutdown_requested:
@@ -163,6 +169,7 @@ class StrategyEngine:
                 current_time = time.time()
                 
                 if current_time - last_check_time >= check_interval:
+                    self._flush_message_buffer()
                     self._execute_strategy_cycle()
                     last_check_time = current_time
                 
@@ -175,91 +182,164 @@ class StrategyEngine:
         self.stop()
     
     def _execute_strategy_cycle(self) -> None:
-        """
-        执行策略判断周期
-        
-        完整的策略分析流程
-        """
         try:
-            cycle = self.lifecycle_manager.get_current_cycle()
-            
-            if cycle.start_price is None and self.price_queue.size() > 0:
-                start_price = self.price_queue.get_earliest_price()
-                if start_price is not None:
-                    self.lifecycle_manager.set_start_price(start_price)
-                    logger.info(
-                        "设置周期起始价格",
-                        cycle_id=cycle.cycle_id,
-                        start_price=start_price
-                    )
-            
-            timestamps, prices = self.price_queue.get_timestamps_and_prices()
-            
-            if len(prices) < 10:
-                logger.debug("价格数据不足，跳过策略判断", price_count=len(prices))
-                return
-            
-            regression_result = self.regression.fit(timestamps, prices)
-            
-            if regression_result is None:
-                logger.debug("回归分析失败，跳过策略判断")
-                return
-            
-            current_price = prices[-1]
-            start_price = cycle.start_price or prices[0]
-            
-            signal = self.signal_generator.generate_signal(
-                current_price=current_price,
-                start_price=start_price,
-                slope_k=regression_result.slope,
-                r_squared=regression_result.r_squared,
-                time_remaining=cycle.time_remaining,
-            )
-            
-            self.publisher.publish_signal(signal)
-            
-            logger.info(
-                "策略周期执行完成",
-                action=signal.action.value,
-                direction=signal.direction.value if signal.direction else None,
-                current_price=current_price,
-                slope=regression_result.slope,
-                r_squared=regression_result.r_squared,
-                time_remaining=cycle.time_remaining
-            )
-            
+            with ErrorContext("execute_strategy_cycle", price_queue_size=self.price_queue.size()) as ctx:
+                cycle = self.lifecycle_manager.get_current_cycle()
+                
+                if cycle.start_price is None and self.price_queue.size() > 0:
+                    start_price = self.price_queue.get_earliest_price()
+                    if start_price is not None:
+                        self.lifecycle_manager.set_start_price(start_price)
+                        logger.info(
+                            "设置周期起始价格",
+                            cycle_id=cycle.cycle_id,
+                            start_price=start_price
+                        )
+                
+                timestamps, prices = self.price_queue.get_timestamps_and_prices()
+                
+                if len(prices) < 10:
+                    logger.debug("价格数据不足，跳过策略判断", price_count=len(prices))
+                    return
+                
+                regression_result = self.regression.fit(timestamps, prices)
+                
+                if regression_result is None:
+                    logger.debug("回归分析失败，跳过策略判断")
+                    return
+                
+                current_price = prices[-1]
+                start_price = cycle.start_price or prices[0]
+                
+                signal = self.signal_generator.generate_signal(
+                    current_price=current_price,
+                    start_price=start_price,
+                    slope_k=regression_result.slope,
+                    r_squared=regression_result.r_squared,
+                    time_remaining=cycle.time_remaining,
+                )
+                
+                self.publisher.publish_signal(signal)
+                
+                logger.info(
+                    "策略周期执行完成",
+                    action=signal.action.value,
+                    direction=signal.direction.value if signal.direction else None,
+                    current_price=current_price,
+                    slope=regression_result.slope,
+                    r_squared=regression_result.r_squared,
+                    time_remaining=cycle.time_remaining
+                )
         except Exception as e:
-            logger.error("策略周期执行异常", error=str(e))
+            logger.error("策略周期执行异常", error=str(e), error_context=ctx.to_dict())
     
+    def _process_messages_batch(self, messages: List[Dict[str, Any]]) -> None:
+        """
+        批量处理消息
+        
+        小批量（<10条）：顺序逐条处理
+        大批量（>=10条）：使用 ThreadPoolExecutor 并行处理
+        
+        Args:
+            messages: 消息列表
+        """
+        start_time = time.time()
+        
+        if len(messages) < self._batch_size_threshold:
+            for msg in messages:
+                self._handle_single_message(msg)
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_msg = {
+                    executor.submit(self._handle_single_message, msg): msg
+                    for msg in messages
+                }
+                
+                for future in as_completed(future_to_msg):
+                    msg = future_to_msg[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.error(
+                            "批量消息处理失败",
+                            message=msg,
+                            error=str(e)
+                        )
+        
+        duration = time.time() - start_time
+        logger.info(
+            "批量消息处理完成",
+            count=len(messages),
+            duration=round(duration, 3)
+        )
+    
+    def _handle_single_message(self, data: Dict[str, Any]) -> None:
+        """
+        处理单条市场数据（内部方法）
+        
+        Args:
+            data: 市场数据字典
+        """
+        price = data.get("price")
+        timestamp = data.get("timestamp") or data.get("_timestamp")
+        
+        if price is None:
+            logger.warn("市场数据缺少价格字段", data=data)
+            return
+        
+        if timestamp is None:
+            timestamp = time.time()
+        
+        self.price_queue.push(price=price, timestamp=timestamp)
+        
+        logger.debug(
+            "市场数据已处理",
+            price=price,
+            timestamp=timestamp,
+            queue_size=self.price_queue.size()
+        )
+    
+    def _flush_message_buffer(self) -> None:
+        """刷新消息缓冲区，触发批量处理"""
+        if not self._message_buffer:
+            return
+        
+        messages_to_process = self._message_buffer.copy()
+        self._message_buffer.clear()
+        self._last_batch_process_time = time.time()
+        
+        self._process_messages_batch(messages_to_process)
+    
+    def _check_and_flush_buffer(self) -> None:
+        """检查是否需要刷新缓冲区（基于时间或大小）"""
+        current_time = time.time()
+        
+        should_flush = (
+            len(self._message_buffer) >= self._batch_size_threshold or
+            (self._message_buffer and 
+             (current_time - self._last_batch_process_time) >= self._batch_timeout_seconds)
+        )
+        
+        if should_flush:
+            self._flush_message_buffer()
+
     def _handle_market_data(self, data: Dict[str, Any]) -> None:
         """
-        处理市场数据
+        处理市场数据（入口方法）
+        
+        将消息添加到缓冲区，根据批量策略决定是否立即处理
         
         Args:
             data: 市场数据字典
         """
         try:
-            price = data.get("price")
-            timestamp = data.get("timestamp") or data.get("_timestamp")
-            
-            if price is None:
-                logger.warn("市场数据缺少价格字段", data=data)
-                return
-            
-            if timestamp is None:
-                timestamp = time.time()
-            
-            self.price_queue.push(price=price, timestamp=timestamp)
-            
-            logger.debug(
-                "市场数据已处理",
-                price=price,
-                timestamp=timestamp,
-                queue_size=self.price_queue.size()
-            )
-            
+            with ErrorContext("handle_market_data", price=data.get("price")) as ctx:
+                self._message_buffer.append(data)
+                self._check_and_flush_buffer()
         except Exception as e:
-            logger.error("处理市场数据异常", error=str(e), data=data)
+            logger.error("处理市场数据异常", error=str(e), error_context=ctx.to_dict(), data=data)
     
     def get_status(self) -> Dict[str, Any]:
         """
