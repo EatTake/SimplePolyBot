@@ -127,12 +127,17 @@ class TestOrderManager:
         )
         
         self.fee_calculator = FeeCalculator()
-        
+
         self.order_manager = OrderManager(
             clob_client=self.mock_clob_client,
             fee_calculator=self.fee_calculator,
             config=self.mock_config
         )
+
+        self._pt = self.order_manager.position_tracker
+        self._pt.get_position = Mock(return_value=0.0)
+        self._pt.get_total_exposure = Mock(return_value=0.0)
+        self._pt.get_daily_pnl = Mock(return_value=0.0)
     
     def test_validate_price_buy_order_valid(self):
         """测试买单价格验证（有效）"""

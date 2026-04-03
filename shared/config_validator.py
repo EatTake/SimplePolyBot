@@ -374,3 +374,203 @@ class ConfigValidator:
             if error:
                 return error
         return None
+
+
+class NewModuleValidationRules:
+    """新增模块（MarketDiscovery、SignalAdapter、StopLossMonitor）的自定义验证规则"""
+
+    @staticmethod
+    def validate_cache_ttl(key: str, value: Any, config: dict) -> Optional[ValidationError]:
+        """验证 cache_ttl 必须为正整数且在 [60, 3600] 范围内"""
+        if "cache_ttl" not in key:
+            return None
+        if not isinstance(value, int) or value <= 0:
+            return ValidationError(
+                parameter=key,
+                message="cache_ttl 必须为正整数",
+                current_value=value,
+                expected_type=int,
+                suggestion=Suggestion(
+                    message="建议使用默认值 300 秒",
+                    suggested_value=300,
+                    reason=SuggestionReason.DEFAULT,
+                ),
+            )
+        if value < 60 or value > 3600:
+            return ValidationError(
+                parameter=key,
+                message=f"cache_ttl 超出有效范围 [60, 3600]，当前值: {value}",
+                current_value=value,
+                valid_range=(60, 3600),
+                suggestion=Suggestion(
+                    message="建议范围 60-3600 秒",
+                    suggested_value=300,
+                    reason=SuggestionReason.DEFAULT,
+                ),
+            )
+        return None
+
+    @staticmethod
+    def validate_stop_loss_percentage(key: str, value: Any, config: dict) -> Optional[ValidationError]:
+        """验证止损比例必须在 (0, 1] 范围内"""
+        if "stop_loss_percentage" not in key and "stop_loss" not in key:
+            return None
+        if not isinstance(value, (int, float)):
+            return ValidationError(
+                parameter=key,
+                message="止损比例必须为数值类型",
+                current_value=value,
+                expected_type=float,
+            )
+        if value <= 0 or value > 1:
+            return ValidationError(
+                parameter=key,
+                message=f"止损比例必须在 (0, 1] 范围内，当前值: {value}",
+                current_value=value,
+                valid_range=(0.001, 1.0),
+                suggestion=Suggestion(
+                    message="建议使用默认值 0.10 (10%)",
+                    suggested_value=0.10,
+                    reason=SuggestionReason.DEFAULT,
+                ),
+            )
+        return None
+
+    @staticmethod
+    def validate_take_profit_percentage(key: str, value: Any, config: dict) -> Optional[ValidationError]:
+        """验证止盈比例必须在 (0, 1] 范围内"""
+        if "take_profit_percentage" not in key and "take_profit" not in key:
+            return None
+        if not isinstance(value, (int, float)):
+            return ValidationError(
+                parameter=key,
+                message="止盈比例必须为数值类型",
+                current_value=value,
+                expected_type=float,
+            )
+        if value <= 0 or value > 1:
+            return ValidationError(
+                parameter=key,
+                message=f"止盈比例必须在 (0, 1] 范围内，当前值: {value}",
+                current_value=value,
+                valid_range=(0.001, 1.0),
+                suggestion=Suggestion(
+                    message="建议使用默认值 0.20 (20%)",
+                    suggested_value=0.20,
+                    reason=SuggestionReason.DEFAULT,
+                ),
+            )
+        stop_loss = config.get("strategy", {}).get("stop_loss_take_profit", {}).get("stop_loss_percentage")
+        if stop_loss and isinstance(value, (int, float)) and isinstance(stop_loss, (int, float)):
+            if value < stop_loss:
+                return ValidationError(
+                    parameter=key,
+                    message=f"止盈比例 ({value}) 应大于等于止损比例 ({stop_loss})，以保证正期望收益",
+                    current_value=value,
+                    suggestion=Suggestion(
+                        message="建议止盈/止损比不低于 2:1",
+                        suggested_value=stop_loss * 2,
+                        reason=SuggestionReason.DEFAULT,
+                    ),
+                )
+        return None
+
+    @staticmethod
+    def validate_max_position_size(key: str, value: Any, config: dict) -> Optional[ValidationError]:
+        """验证最大持仓必须为正数"""
+        if "max_position_size" not in key:
+            return None
+        if not isinstance(value, (int, float)) or value <= 0:
+            return ValidationError(
+                parameter=key,
+                message="max_position_size 必须为正数",
+                current_value=value,
+                expected_type=int,
+                suggestion=Suggestion(
+                    message="建议根据账户资金设置，通常为总资金的 20-30%",
+                    suggested_value=5000,
+                    reason=SuggestionReason.DEFAULT,
+                ),
+            )
+        max_total = config.get("strategy", {}).get("risk_management", {}).get("max_total_exposure")
+        if max_total and isinstance(value, (int, float)) and isinstance(max_total, (int, float)):
+            if value > max_total:
+                return ValidationError(
+                    parameter=key,
+                    message=f"单市场最大持仓 ({value}) 不应超过总风险敞口上限 ({max_total})",
+                    current_value=value,
+                    suggestion=Suggestion(
+                        message="建议设置为总风险敞口的 25-50%",
+                        suggested_value=int(max_total * 0.25),
+                        reason=SuggestionReason.DEFAULT,
+                    ),
+                )
+        return None
+
+    @staticmethod
+    def validate_refresh_interval(key: str, value: Any, config: dict) -> Optional[ValidationError]:
+        """验证刷新间隔必须在 [30, 300] 范围内"""
+        if "refresh_interval" not in key:
+            return None
+        if not isinstance(value, int) or value <= 0:
+            return ValidationError(
+                parameter=key,
+                message="refresh_interval 必须为正整数",
+                current_value=value,
+                expected_type=int,
+                suggestion=Suggestion(
+                    message="Fast Market 建议使用 60 秒",
+                    suggested_value=60,
+                    reason=SuggestionReason.DEFAULT,
+                ),
+            )
+        if value < 30 or value > 300:
+            return ValidationError(
+                parameter=key,
+                message=f"刷新间隔超出有效范围 [30, 300] 秒，当前值: {value}",
+                current_value=value,
+                valid_range=(30, 300),
+                suggestion=Suggestion(
+                    message="建议范围 30-300 秒",
+                    suggested_value=60,
+                    reason=SuggestionReason.DEFAULT,
+                ),
+            )
+        return None
+
+    @staticmethod
+    def validate_signal_adapter_sizes(key: str, value: Any, config: dict) -> Optional[ValidationError]:
+        """验证信号适配器订单大小参数的一致性：min <= default <= max"""
+        adapter_keys = ["signal_adapter.min_size", "signal_adapter.default_size", "signal_adapter.max_size"]
+        if key not in adapter_keys:
+            return None
+
+        min_size = config.get("signal_adapter", {}).get("min_size")
+        default_size = config.get("signal_adapter", {}).get("default_size")
+        max_size = config.get("signal_adapter", {}).get("max_size")
+
+        if all(v is not None for v in [min_size, default_size, max_size]):
+            if not (min_size <= default_size <= max_size):
+                return ValidationError(
+                    parameter=key,
+                    message=f"信号适配器大小约束不满足: min({min_size}) <= default({default_size}) <= max({max_size})",
+                    current_value=value,
+                    suggestion=Suggestion(
+                        message="请确保 min_size <= default_size <= max_size",
+                        suggested_value=None,
+                        reason=SuggestionReason.DEFAULT,
+                    ),
+                )
+        return None
+
+    @staticmethod
+    def get_all_rules() -> list:
+        """获取所有新模块验证规则的列表"""
+        return [
+            NewModuleValidationRules.validate_cache_ttl,
+            NewModuleValidationRules.validate_stop_loss_percentage,
+            NewModuleValidationRules.validate_take_profit_percentage,
+            NewModuleValidationRules.validate_max_position_size,
+            NewModuleValidationRules.validate_refresh_interval,
+            NewModuleValidationRules.validate_signal_adapter_sizes,
+        ]

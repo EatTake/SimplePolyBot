@@ -20,6 +20,13 @@ strategy:
     enabled: true
     stop_loss_percentage: 0.1
     take_profit_percentage: 0.2
+  market_discovery:
+    gamma_api_url: ${GAMMA_API_URL:https://gamma-api.polymarket.com}
+    clob_api_url: ${CLOB_API_URL:https://clob.polymarket.com}
+    cache_ttl: 300
+    slug_prefix: "btc-updown-5m"
+    refresh_interval: 60
+    enabled: true
 redis:
   host: ${REDIS_HOST:localhost}
   port: ${REDIS_PORT:6379}

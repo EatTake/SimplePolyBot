@@ -5,6 +5,7 @@
 支持每秒执行一次策略判断和优雅关闭
 """
 
+import queue
 import signal
 import sys
 import time
@@ -13,7 +14,7 @@ from typing import Optional, Dict, Any, List
 from shared.logger import get_logger
 from shared.config import Config, load_config
 from shared.redis_client import RedisClient, RedisConnectionConfig
-from shared.constants import MARKET_DATA_CHANNEL, FAST_MARKET_DURATION_SECONDS
+from shared.constants import MARKET_DATA_CHANNEL, FAST_MARKET_DURATION_SECONDS, TRADE_RESULT_CHANNEL
 from shared.error_context import ErrorContext
 
 from modules.strategy_engine.redis_subscriber import RedisSubscriber
@@ -23,6 +24,9 @@ from modules.strategy_engine.safety_cushion import SafetyCushionCalculator
 from modules.strategy_engine.signal_generator import SignalGenerator, SignalAction
 from modules.strategy_engine.market_lifecycle import MarketLifecycleManager
 from modules.strategy_engine.redis_publisher import RedisPublisher
+from shared.position_tracker import PositionTracker
+from shared.market_discovery import MarketDiscovery
+from shared.signal_adapter import SignalAdapter
 
 
 logger = get_logger(__name__)
@@ -49,10 +53,11 @@ class StrategyEngine:
         self._running = False
         self._shutdown_requested = False
         
-        self._message_buffer: List[Dict[str, Any]] = []
+        self._message_buffer: queue.Queue = queue.Queue(maxsize=1000)
         self._last_batch_process_time = 0.0
         self._batch_size_threshold = 10
         self._batch_timeout_seconds = 1.0
+        self._last_cycle_id = None
         
         self._setup_signal_handlers()
         
@@ -93,6 +98,15 @@ class StrategyEngine:
         )
         
         self.publisher = RedisPublisher(self.redis_client)
+
+        self.market_discovery = MarketDiscovery(
+            redis_client=self.redis_client,
+            config=self.config,
+        )
+        self.signal_adapter = SignalAdapter(config=self.config)
+
+        self.position_tracker = PositionTracker(redis_client=self.redis_client)
+        self.position_tracker.subscribe_to_trade_results(self.redis_client)
         
         self.subscriber = RedisSubscriber(
             redis_client=self.redis_client,
@@ -100,7 +114,7 @@ class StrategyEngine:
             channels=[MARKET_DATA_CHANNEL],
         )
         
-        logger.info("所有组件初始化完成")
+        logger.info("所有组件初始化完成（含 TRADE_RESULT_CHANNEL 订阅）")
     
     def _setup_signal_handlers(self) -> None:
         """设置信号处理器"""
@@ -149,6 +163,9 @@ class StrategyEngine:
         self._running = False
         self._shutdown_requested = True
         
+        if hasattr(self, "position_tracker") and self.position_tracker:
+            self.position_tracker.unsubscribe()
+        
         self.subscriber.stop()
         
         self.redis_client.disconnect()
@@ -196,6 +213,20 @@ class StrategyEngine:
                             start_price=start_price
                         )
                 
+                if cycle.cycle_id != self._last_cycle_id:
+                    old_cycle_id = self._last_cycle_id
+                    queue_size_before_clear = self.price_queue.size()
+                    
+                    logger.info(
+                        "检测到周期切换，清空 PriceQueue",
+                        old_cycle_id=old_cycle_id,
+                        new_cycle_id=cycle.cycle_id,
+                        queue_size_before_clear=queue_size_before_clear
+                    )
+                    
+                    self.price_queue.clear()
+                    self._last_cycle_id = cycle.cycle_id
+                
                 timestamps, prices = self.price_queue.get_timestamps_and_prices()
                 
                 if len(prices) < 10:
@@ -219,7 +250,28 @@ class StrategyEngine:
                     time_remaining=cycle.time_remaining,
                 )
                 
-                self.publisher.publish_signal(signal)
+                if self._check_duplicate_signal():
+                    logger.debug("重复信号检查通过，跳过本次信号发布")
+                    return
+                
+                # 通过 SignalAdapter 转换为执行型信号（仅 BUY 信号需要转换）
+                if signal.action == SignalAction.BUY:
+                    try:
+                        market_info = self.market_discovery.get_active_market()
+                        if market_info:
+                            execution_signal = self.signal_adapter.adapt(
+                                strategy_signal=signal.to_dict(),
+                                market_info=market_info,
+                            )
+                            self.publisher.publish_signal(execution_signal)
+                        else:
+                            logger.warning("无法获取活跃市场信息，发布原始信号")
+                            self.publisher.publish_signal(signal)
+                    except Exception as e:
+                        logger.error("信号适配失败，发布原始信号", error=str(e))
+                        self.publisher.publish_signal(signal)
+                else:
+                    self.publisher.publish_signal(signal)
                 
                 logger.info(
                     "策略周期执行完成",
@@ -235,38 +287,23 @@ class StrategyEngine:
     
     def _process_messages_batch(self, messages: List[Dict[str, Any]]) -> None:
         """
-        批量处理消息
+        批量处理消息（顺序处理保证时序）
         
-        小批量（<10条）：顺序逐条处理
-        大批量（>=10条）：使用 ThreadPoolExecutor 并行处理
+        所有消息统一按 timestamp 排序后逐条顺序处理，
+        确保时间序列数据的时序正确性，避免并行处理导致的数据乱序
         
         Args:
             messages: 消息列表
         """
         start_time = time.time()
         
-        if len(messages) < self._batch_size_threshold:
-            for msg in messages:
-                self._handle_single_message(msg)
-        else:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                future_to_msg = {
-                    executor.submit(self._handle_single_message, msg): msg
-                    for msg in messages
-                }
-                
-                for future in as_completed(future_to_msg):
-                    msg = future_to_msg[future]
-                    try:
-                        future.result()
-                    except Exception as e:
-                        logger.error(
-                            "批量消息处理失败",
-                            message=msg,
-                            error=str(e)
-                        )
+        sorted_messages = sorted(
+            messages,
+            key=lambda m: m.get("timestamp") or m.get("_timestamp") or 0.0
+        )
+        
+        for msg in sorted_messages:
+            self._handle_single_message(msg)
         
         duration = time.time() - start_time
         logger.info(
@@ -303,22 +340,24 @@ class StrategyEngine:
     
     def _flush_message_buffer(self) -> None:
         """刷新消息缓冲区，触发批量处理"""
-        if not self._message_buffer:
-            return
+        messages_to_process = []
+        while not self._message_buffer.empty():
+            try:
+                messages_to_process.append(self._message_buffer.get_nowait())
+            except queue.Empty:
+                break
         
-        messages_to_process = self._message_buffer.copy()
-        self._message_buffer.clear()
-        self._last_batch_process_time = time.time()
-        
-        self._process_messages_batch(messages_to_process)
+        if messages_to_process:
+            self._last_batch_process_time = time.time()
+            self._process_messages_batch(messages_to_process)
     
     def _check_and_flush_buffer(self) -> None:
         """检查是否需要刷新缓冲区（基于时间或大小）"""
         current_time = time.time()
         
         should_flush = (
-            len(self._message_buffer) >= self._batch_size_threshold or
-            (self._message_buffer and 
+            self._message_buffer.qsize() >= self._batch_size_threshold or
+            (self._message_buffer.qsize() > 0 and 
              (current_time - self._last_batch_process_time) >= self._batch_timeout_seconds)
         )
         
@@ -336,25 +375,92 @@ class StrategyEngine:
         """
         try:
             with ErrorContext("handle_market_data", price=data.get("price")) as ctx:
-                self._message_buffer.append(data)
+                try:
+                    self._message_buffer.put_nowait(data)
+                except queue.Full:
+                    logger.warning("消息缓冲区已满，丢弃消息")
                 self._check_and_flush_buffer()
         except Exception as e:
             logger.error("处理市场数据异常", error=str(e), error_context=ctx.to_dict(), data=data)
+
+    def _handle_trade_result(self, data: Dict[str, Any]) -> None:
+        """
+        处理交易结果反馈
+        
+        接收来自 order_executor 的交易执行结果，
+        通过 PositionTracker 更新持仓状态，实现策略引擎感知闭环。
+        
+        Args:
+            data: 交易结果字典，包含 token_id、result 等字段
+        """
+        try:
+            result = data.get("result", {})
+            order_result = data.get("order_result", {})
+            token_id = data.get("token_id", "")
+            success = order_result.get("success", False) if order_result else result.get("success", False)
+
+            self.position_tracker.update_from_trade_result(data)
+
+            logger.info(
+                "收到交易结果反馈",
+                token_id=token_id,
+                success=success,
+                open_positions=len(self.position_tracker.get_open_positions()),
+            )
+        except Exception as e:
+            logger.error("处理交易结果反馈失败", error=str(e))
+
+    def _check_duplicate_signal(self) -> bool:
+        """
+        重复信号检查框架
+        
+        在生成信号前检查当前持仓状态，
+        避免对已有持仓的同一方向重复下单。
+        
+        Returns:
+            True 表示应跳过信号生成（存在重复风险），
+            False 表示可以正常生成信号。
+        """
+        open_positions = self.position_tracker.get_open_positions()
+
+        if not open_positions:
+            return False
+
+        for pos in open_positions:
+            if pos.quantity > 1e-9:
+                target_token_id = getattr(pos, "token_id", "")
+                if target_token_id:
+                    logger.debug(
+                        "已有持仓，跳过信号生成",
+                        token_id=target_token_id,
+                        quantity=pos.quantity,
+                    )
+                    return True
+
+        return False
     
     def get_status(self) -> Dict[str, Any]:
         """
         获取引擎状态
-        
+
         Returns:
             状态信息字典
         """
-        return {
+        status = {
             "running": self._running,
             "shutdown_requested": self._shutdown_requested,
             "price_queue_size": self.price_queue.size(),
             "publisher_stats": self.publisher.get_statistics(),
             "subscriber_running": self.subscriber.is_running(),
         }
+        
+        if hasattr(self, "position_tracker") and self.position_tracker:
+            status["open_positions_count"] = len(
+                self.position_tracker.get_open_positions()
+            )
+            status["total_exposure"] = self.position_tracker.get_total_exposure()
+        
+        return status
 
 
 def main() -> None:

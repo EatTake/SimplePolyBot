@@ -19,6 +19,8 @@ import structlog
 from modules.order_executor.clob_client import ClobClientWrapper, ClobClientError
 from modules.order_executor.fee_calculator import FeeCalculator
 from shared.config import Config
+from shared.risk_manager import RiskManager, RiskCheckResult
+from shared.position_tracker import PositionTracker
 from shared.constants import (
     ORDER_TYPE_FAK,
     ORDER_SIDE_BUY,
@@ -120,7 +122,10 @@ class OrderManager:
         self.max_buy_prices = strategy_config.max_buy_prices
         self.order_sizes = strategy_config.order_sizes
         self.risk_management = strategy_config.risk_management
-        
+
+        self.position_tracker = PositionTracker()
+        self.risk_manager = RiskManager(config=self.risk_management, position_tracker=self.position_tracker)
+
         self._order_history: List[Dict[str, Any]] = []
         
         logger.info("初始化订单管理器")
@@ -432,7 +437,26 @@ class OrderManager:
             )
             
             balance = self.clob_client.get_usdc_balance()
-            
+
+            risk_check = self.risk_manager.check_before_order(
+                token_id=token_id,
+                side=ORDER_SIDE_BUY,
+                price=max_price or self.max_buy_prices.get("default", 0.95),
+                size=size,
+            )
+            if not risk_check.passed:
+                logger.warning(
+                    "订单被风控拒绝",
+                    token_id=token_id,
+                    reason=risk_check.reason,
+                    details=risk_check.check_details,
+                )
+                return OrderResult(
+                    success=False,
+                    error_message=f"Risk check failed: {risk_check.reason}",
+                    metadata={"risk_check": risk_check.check_details},
+                )
+
             size_validation = self.validate_order_size(size, balance)
             if not size_validation.is_valid:
                 return OrderResult(
@@ -514,7 +538,8 @@ class OrderManager:
                     "token_id": token_id,
                     "side": ORDER_SIDE_BUY,
                     "order_type": order_type,
-                    "execution_time": time.time() - start_time
+                    "execution_time": time.time() - start_time,
+                    "risk_check": risk_check.check_details,
                 }
             )
             
@@ -580,7 +605,26 @@ class OrderManager:
             )
             
             token_balance = self.clob_client.get_token_balance(token_id)
-            
+
+            risk_check = self.risk_manager.check_before_order(
+                token_id=token_id,
+                side="SELL",
+                price=min_price or 0.01,
+                size=size,
+            )
+            if not risk_check.passed:
+                logger.warning(
+                    "卖单被风控拒绝",
+                    token_id=token_id,
+                    reason=risk_check.reason,
+                    details=risk_check.check_details,
+                )
+                return OrderResult(
+                    success=False,
+                    error_message=f"Risk check failed: {risk_check.reason}",
+                    metadata={"risk_check": risk_check.check_details},
+                )
+
             if token_balance < size:
                 error_msg = f"代币余额不足：需要 {size}，可用 {token_balance}"
                 logger.warning(error_msg)
@@ -640,7 +684,8 @@ class OrderManager:
                     "token_id": token_id,
                     "side": "SELL",
                     "order_type": order_type,
-                    "execution_time": time.time() - start_time
+                    "execution_time": time.time() - start_time,
+                    "risk_check": risk_check.check_details,
                 }
             )
             
@@ -715,6 +760,7 @@ class OrderManager:
                 "failed_orders": 0,
                 "total_volume": 0.0,
                 "total_fees": 0.0,
+                "risk_status": self.risk_manager.get_risk_status(),
             }
         
         total = len(self._order_history)
@@ -740,4 +786,5 @@ class OrderManager:
             "success_rate": successful / total if total > 0 else 0.0,
             "total_volume": total_volume,
             "total_fees": total_fees,
+            "risk_status": self.risk_manager.get_risk_status(),
         }

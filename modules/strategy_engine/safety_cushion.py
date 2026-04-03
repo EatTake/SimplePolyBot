@@ -169,23 +169,39 @@ class SafetyCushionCalculator:
         safety_cushion: float,
     ) -> float:
         """
-        计算最大买入价格
+        计算最大买入价格（旧版接口 - 建议使用 SignalGenerator 版本）
         
-        公式: Max Buy Price = Current Price - Safety Cushion
+        ⚠️ 已知问题（Bug #1, #2）：
+           此方法接收 current_price（BTC 绝对价格 ~$67,000），减去 safety_cushion（概率值 ~0.05）
+           后仍约 $67,000，clamp 到 [0.01, 0.99] 后恒为 0.99
+           
+        ✅ 推荐替代方案：
+           使用 SignalGenerator.calculate_max_buy_price(market_best_ask, safety_cushion, time_remaining)
+           该版本在概率空间（0-1）计算，避免量纲混淆
+        
+        公式: Max Buy Price = Current Price - Safety Cushion（有 Bug）
         
         Args:
-            current_price: 当前价格
-            safety_cushion: 安全垫厚度
+            current_price: 当前价格（注意：此参数应为概率空间值，但历史原因可能传入 BTC 绝对价格）
+            safety_cushion: 安全垫厚度（概率空间）
         
         Returns:
-            最大买入价格
+            最大买入价格（clamp 到 [0.01, 0.99]）
         """
+        import warnings
+        warnings.warn(
+            "SafetyCushionCalculator.calculate_max_buy_price() 存在量纲混淆 Bug (Bug #1, #2)。\n"
+            "请使用 SignalGenerator.calculate_max_buy_price(market_best_ask, safety_cushion, time_remaining) 替代。",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         max_buy_price = current_price - safety_cushion
         
         max_buy_price = max(0.01, min(0.99, max_buy_price))
         
         logger.debug(
-            "计算最大买入价格",
+            "计算最大买入价格（旧版接口 - 可能存在 Bug）",
             current_price=current_price,
             safety_cushion=safety_cushion,
             max_buy_price=max_buy_price

@@ -281,6 +281,166 @@ def _register_strategy_params(registry: ParameterRegistry) -> None:
     ))
 
 
+def _register_market_discovery_params(registry: ParameterRegistry) -> None:
+    registry.register(ParameterInfo(
+        key="strategy.market_discovery.enabled",
+        name="市场发现模块开关",
+        description="控制市场发现模块是否启用。启用后自动扫描并发现符合条件的 Fast Market 市场。",
+        type=bool,
+        default=True,
+        category="market_discovery",
+        level="core",
+        validation_hint="Fast Market 策略必须开启此模块",
+    ))
+    registry.register(ParameterInfo(
+        key="strategy.market_discovery.gamma_api_url",
+        name="Gamma API 地址",
+        description="Polymarket Gamma API 的基础 URL，用于查询市场列表、事件信息、标签过滤等。",
+        type=str,
+        default="https://gamma-api.polymarket.com",
+        required=True,
+        category="market_discovery",
+        level="core",
+        validation_hint="使用官方 API 地址，生产环境可通过环境变量覆盖",
+    ))
+    registry.register(ParameterInfo(
+        key="strategy.market_discovery.clob_api_url",
+        name="CLOB API 地址",
+        description="Polymarket CLOB API 的基础 URL，用于获取订单簿深度、交易量等实时数据。",
+        type=str,
+        default="https://clob.polymarket.com",
+        required=True,
+        category="market_discovery",
+        level="core",
+        validation_hint="使用官方 CLOB 地址，生产环境可通过环境变量覆盖",
+    ))
+    registry.register(ParameterInfo(
+        key="strategy.market_discovery.cache_ttl",
+        name="缓存生存时间 (TTL)",
+        description="市场发现结果的缓存时间（秒）。在此时间内重复查询将返回缓存结果，减少 API 调用频率。",
+        type=int,
+        default=300,
+        range=(60, 3600),
+        category="market_discovery",
+        level="standard",
+        suggestions={"low_frequency": 600, "default": 300, "high_frequency": 120},
+        validation_hint="建议范围 60-3600 秒，过短会增加 API 压力，过长会导致数据滞后",
+    ))
+    registry.register(ParameterInfo(
+        key="strategy.market_discovery.slug_prefix",
+        name="市场 Slug 前缀过滤",
+        description="用于筛选目标市场的 slug 前缀模式。只有 slug 匹配此前缀的市场才会被策略引擎处理。",
+        type=str,
+        default="btc-updown-5m",
+        required=False,
+        category="market_discovery",
+        level="standard",
+        choices=["btc-updown-5m", "btc-updown-15m", "btc-updown-1h"],
+        validation_hint="确保前缀与 Gamma API 中实际的市场 slug 格式一致",
+    ))
+    registry.register(ParameterInfo(
+        key="strategy.market_discovery.refresh_interval",
+        name="市场刷新间隔",
+        description="定时刷新活跃市场列表的间隔时间（秒）。控制市场发现模块扫描新市场的频率。",
+        type=int,
+        default=60,
+        range=(30, 300),
+        category="market_discovery",
+        level="standard",
+        suggestions={"slow": 120, "default": 60, "fast": 30},
+        validation_hint="建议范围 30-300 秒，Fast Market 每 5 分钟滚动一次，60 秒较合理",
+    ))
+
+
+def _register_signal_adapter_params(registry: ParameterRegistry) -> None:
+    registry.register(ParameterInfo(
+        key="signal_adapter.default_size",
+        name="信号适配器默认订单大小",
+        description="信号适配器将策略信号转换为订单时的默认下单金额（USDC），当无法从 size_map 匹配时使用此值。",
+        type=int,
+        default=100,
+        range=(10, 10000),
+        category="signal_adapter",
+        level="core",
+        suggestions={"conservative": 50, "default": 100, "aggressive": 500},
+        validation_hint="应与 strategy.order_sizes.default 保持一致或略小",
+    ))
+    registry.register(ParameterInfo(
+        key="signal_adapter.min_size",
+        name="信号适配器最小订单大小",
+        description="信号适配器允许的最小下单金额（USDC）。低于此值的信号将被忽略或合并。",
+        type=int,
+        default=10,
+        range=(1, 5000),
+        category="signal_adapter",
+        level="standard",
+        suggestions={"conservative": 25, "default": 10, "aggressive": 5},
+        depends_on=["signal_adapter.default_size", "signal_adapter.max_size"],
+        validation_hint="必须小于等于 default_size 和 max_size",
+    ))
+    registry.register(ParameterInfo(
+        key="signal_adapter.max_size",
+        name="信号适配器最大订单大小",
+        description="信号适配器允许的最大下单金额（USDC）。超过此值的信号将被拆分或截断。",
+        type=int,
+        default=1000,
+        range=(100, 50000),
+        category="signal_adapter",
+        level="standard",
+        suggestions={"conservative": 500, "default": 1000, "aggressive": 5000},
+        depends_on=["signal_adapter.default_size", "signal_adapter.min_size"],
+        validation_hint="必须大于等于 default_size 和 min_size",
+    ))
+    registry.register(ParameterInfo(
+        key="signal_adapter.size_map",
+        name="信号强度到订单大小映射表",
+        description="根据策略信号置信度/强度映射到不同订单大小的配置字典。格式: {\"high\": 500, \"medium\": 200, \"low\": 50}",
+        type=dict,
+        default={"high": 500, "medium": 200, "low": 50},
+        category="signal_adapter",
+        level="advanced",
+        validation_hint="复杂类型，键为信号等级字符串，值为正整数 USDC 金额",
+    ))
+
+
+def _register_stop_loss_monitor_params(registry: ParameterRegistry) -> None:
+    registry.register(ParameterInfo(
+        key="stop_loss_monitor.enabled",
+        name="止损监控器独立开关",
+        description="止损监控器模块的独立启用开关。即使全局 stop_loss_take_profit.enabled 为 true，也可单独关闭此监控器。",
+        type=bool,
+        default=True,
+        category="risk_control",
+        level="standard",
+        depends_on=["strategy.stop_loss_take_profit.enabled"],
+        validation_hint="依赖全局止损止盈开关，两者都为 true 时才生效",
+    ))
+    registry.register(ParameterInfo(
+        key="stop_loss_monitor.check_interval",
+        name="止损检查间隔",
+        description="止损监控器扫描持仓并评估止损/止盈条件的间隔时间（秒）。越频繁则响应越快但资源消耗越大。",
+        type=int,
+        default=30,
+        range=(5, 300),
+        category="risk_control",
+        level="standard",
+        suggestions={"realtime": 10, "default": 30, "relaxed": 60},
+        validation_hint="Fast Market 建议 10-30 秒，普通市场可放宽至 60 秒",
+    ))
+    registry.register(ParameterInfo(
+        key="stop_loss_monitor.notification_threshold",
+        name="止损通知阈值",
+        description="触发通知的最低亏损金额（USDC）。仅当单次止损平仓亏损超过此值时发送告警通知。",
+        type=int,
+        default=50,
+        range=(10, 10000),
+        category="risk_control",
+        level="advanced",
+        suggestions={"sensitive": 20, "default": 50, "tolerant": 200},
+        validation_hint="避免过多无效告警，建议设置为 min_order_size 的 2-5 倍",
+    ))
+
+
 def _register_redis_params(registry: ParameterRegistry) -> None:
     registry.register(ParameterInfo(
         key="redis.host",
@@ -538,6 +698,9 @@ def initialize_parameter_registry() -> ParameterRegistry:
     """初始化参数注册表并注册所有参数元数据"""
     registry = ParameterRegistry.get_instance()
     _register_strategy_params(registry)
+    _register_market_discovery_params(registry)
+    _register_signal_adapter_params(registry)
+    _register_stop_loss_monitor_params(registry)
     _register_redis_params(registry)
     _register_module_params(registry)
     _register_api_params(registry)

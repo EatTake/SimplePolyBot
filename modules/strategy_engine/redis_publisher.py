@@ -160,11 +160,25 @@ class RedisPublisher:
             格式化后的消息字典
         """
         message = {
+            "signal_id": signal.signal_id,
             "action": signal.action.value,
             "timestamp": signal.timestamp,
         }
         
-        if signal.action == SignalAction.BUY and signal.direction:
+        # 新格式：执行型信号（包含 token_id/market_id/side/size/price）
+        if signal.token_id:
+            message.update({
+                "token_id": signal.token_id,
+                "market_id": signal.market_id,
+                "side": signal.side,
+                "size": signal.size,
+                "price": signal.price,
+                "confidence": signal.confidence,
+                "direction": signal.direction.value if signal.direction else None,
+                "strategy": signal.strategy,
+            })
+        # 旧格式兼容：分析型信号（保留原有字段）
+        elif signal.action == SignalAction.BUY and signal.direction:
             message.update({
                 "direction": signal.direction.value,
                 "max_price": signal.max_buy_price,
