@@ -1,0 +1,21 @@
+[Unit]
+Description=SniperBot Polymarket Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/SimplePolyBot
+ExecStart=/opt/SimplePolyBot/venv/bin/python -m sniper_bot.app.main
+Restart=always
+RestartSec=10
+Environment=PATH=/opt/SimplePolyBot/venv/bin:/usr/bin
+EnvironmentFile=/opt/SimplePolyBot/.env
+StandardOutput=journal
+StandardError=journal
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

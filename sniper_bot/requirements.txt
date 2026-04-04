@@ -1,0 +1,25 @@
+# SniperBot — 核心依赖
+
+# 数值计算
+numpy>=1.24.0
+
+# 异步 WebSocket
+websockets>=12.0
+
+# 异步 HTTP
+httpx>=0.25.0
+
+# Polymarket SDK
+py-clob-client>=0.5.0
+
+# Web3 (CTF 赎回)
+web3>=6.0.0
+
+# 环境变量
+python-dotenv>=1.0.0
+
+# YAML 配置
+pyyaml>=6.0
+
+# 以太坊签名
+eth-account>=0.11.0

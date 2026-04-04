@@ -1,0 +1,66 @@
+# ============================================================
+# SniperBot 策略与风控参数配置
+# ============================================================
+
+# 5 分钟周期设置
+cycle:
+  duration_seconds: 300
+  snipe_window_start: 100  # T-100s 开始狙击
+  snipe_window_end: 10     # T-10s 截止
+
+# 布朗桥模型参数
+brownian_bridge:
+  max_reversal_probability: 0.03  # 最大可接受反转概率 = 3%
+  # 即要求 97% 置信度才出手
+
+# 波动率估算
+volatility:
+  ewma_lambda: 0.94        # EWMA 衰减因子 (RiskMetrics 标准)
+  min_samples: 10           # 最少数据点
+  price_window_seconds: 180 # 价格窗口长度
+
+# OLS 回归
+momentum:
+  min_r_squared: 0.60       # 最低趋势稳定性
+  min_data_points: 30       # 最少数据点
+
+# 信号仲裁
+signal:
+  min_confidence: 0.97      # 最低获胜置信度
+  require_direction_agreement: true  # 要求双源方向一致
+
+# 时间衰减买入价格
+# 连续函数: max_price = 0.95 - 0.002 × time_remaining
+# T-10s → $0.93, T-50s → $0.85, T-100s → $0.75
+max_price:
+  slope: -0.002
+  intercept: 0.95
+  floor: 0.60
+  ceiling: 0.93
+
+# 凯利仓位
+position_sizing:
+  use_half_kelly: true
+  balance_fraction: 0.20    # 单笔最大投入余额占比
+  depth_fraction: 0.50      # 最大占用订单簿深度
+  min_shares: 10
+  max_shares: 1000
+
+# 风控参数 — 每一个都被 RiskGovernor 强制执行
+risk:
+  max_single_bet_usd: 200
+  max_daily_loss_usd: 500
+  max_drawdown_pct: 0.15
+  min_balance_usd: 100
+  max_bets_per_hour: 12
+  max_consecutive_losses_before_cooldown: 2
+  cooldown_cycles: 2
+
+# 赎回
+settlement:
+  check_interval_seconds: 300
+
+# 日志
+logging:
+  level: INFO
+  file: logs/sniper_bot.log

@@ -63,11 +63,18 @@ class TestSignalGenerator:
         assert not generator.is_in_time_window(150.0)
     
     def test_calculate_max_buy_price(self):
-        """测试最大买入价格计算"""
+        """测试最大买入价格计算（新版本：概率空间）"""
         generator = SignalGenerator()
         
-        max_price = generator.calculate_max_buy_price(0.50, 0.05)
-        assert max_price == 0.45
+        max_price = generator.calculate_max_buy_price(
+            market_best_ask=0.50,
+            safety_cushion=0.05,
+            time_remaining=100.0,
+        )
+        
+        assert max_price < 0.50, "新公式应在 best_ask 基础上打折"
+        assert max_price != 0.99, "新公式不应恒定返回 0.99"
+        assert 0.01 <= max_price <= 0.99
     
     def test_calculate_confidence(self):
         """测试置信度计算"""
